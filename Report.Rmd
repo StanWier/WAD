@@ -1,0 +1,466 @@
+---
+title: "Report"
+# author: "Norbert Gała, Stanisław Kochnowski"
+date: "2026-01-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<!-- ## R Markdown -->
+
+<!-- This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>. -->
+
+<!-- When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this: -->
+
+```{r packages}
+# Load required libraries
+library(eurostat)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(reshape2)
+library(forecast)
+library(tseries)
+library(scales)
+library(stats)
+library(zoo)
+library(FactoMineR)
+library(factoextra)
+
+
+# Suppress warnings
+options(warnings = -1)
+```
+
+<!-- ## Including Plots -->
+
+<!-- You can also embed plots, for example: -->
+
+```{r indicators, echo=FALSE}
+
+# Configure indicators
+indicators <- list(
+    nrg_ind_ren = 'OZE_Share',           # Share of RES in final energy consumption [%]
+    nrg_ind_ei = 'Energy_Intensity',     # Energy intensity (kgoe / 1000 EUR)
+    nrg_ind_id = 'Import_Dependency',    # Import dependency [%]
+    env_ac_ainah_r2 = 'GHG_Energy_Sector', # Emissions from energy supply sector
+    nrg_bal_c = 'Gross_Elec_Prod'        # Total electricity production [GWh]
+)
+
+# Statistics configuration
+stats_config <- list(
+    nrg_ind_ren = list(nrg_bal = "REN"),
+    nrg_ind_ei = list(nrg_bal = "EI_GDP_PPS"),
+    nrg_ind_id = list(siec = "TOTAL"),
+    env_ac_ainah_r2 = list(
+        nace_r2 = "D",
+        airpol = "GHG",
+        unit = "THS_T"
+    ),
+    nrg_bal_c = list(
+        nrg_bal = "GEP",
+        siec = "TOTAL",
+        unit = "GWH"
+    )
+)
+
+```
+
+```{r}
+# Countries
+countries <- list(
+    "AT" = "Austria", "BE" = "Belgium"
+    # , "BG" = "Bulgaria", "CY" = "Cyprus",
+    # "CZ" = "Czechia", "DE" = "Germany", "DK" = "Denmark", "EE" = "Estonia",
+    # "EL" = "Greece", "ES" = "Spain", "FI" = "Finland", "FR" = "France",
+    # "HR" = "Croatia", "HU" = "Hungary", "IE" = "Ireland", "IT" = "Italy",
+    # "LT" = "Lithuania", "LU" = "Luxembourg", "LV" = "Latvia", "MT" = "Malta",
+    # "NL" = "Netherlands", "PL" = "Poland", "PT" = "Portugal", "RO" = "Romania",
+    # "SE" = "Sweden", "SI" = "Slovenia", "SK" = "Slovakia"
+)
+```
+
+```{r}
+# Function to fetch and clean data
+fetch_data <- function(code, name, geo) {
+    # Fetch data from Eurostat
+    df <- get_eurostat(id = code, filters = stats_config[[code]], time_format = "num")
+    
+    # Filter for specific country
+    df <- df %>% filter(geo == !!geo)
+    
+    # Extract year columns
+    df <- df %>% select(time, values)
+    
+    # Rename columns
+    colnames(df) <- c("Year", name)
+    
+    # Add country column
+    df$country <- geo
+    df$Year <- as.Date(paste0(df$Year, "-01-01"))
+    
+    return(df)
+}
+```
+
+```{r api, message=FALSE, warning=FALSE}
+# Main data collection
+print("Connecting to Eurostat API...")
+
+data_list <- list()
+
+for (code in names(indicators)) {
+    name <- indicators[[code]]
+    print(paste("  - Downloading:", name, "(", code, ")"))
+    
+    country_data <- list()
+    for (geo in names(countries)) {
+        df_country <- fetch_data(code, name, geo)
+        country_data[[geo]] <- df_country
+    }
+    
+    # Combine all countries for this indicator
+    combined <- bind_rows(country_data)
+    data_list[[name]] <- combined
+}
+
+# Merge all indicators
+data <- Reduce(function(x, y) merge(x, y, by = c("Year", "country"), all = TRUE), data_list)
+
+```
+
+```{r cleaning}
+
+# Remove rows with missing values
+data <- na.omit(data)
+
+print(paste("\nData collected for period:", min(data$Year), "-", max(data$Year)))
+print(paste("Number of observations:", nrow(data)))
+print(paste("Number of diagnostic variables:", ncol(data) - 2)) # Subtract Year and country columns
+
+```
+
+
+```{r}
+# Variable types (S - stimulant, D - destimulant)
+variable_types <- list(
+    OZE_Share = 'S',
+    Energy_Intensity = 'D',
+    Import_Dependency = 'D',
+    GHG_Energy_Sector = 'D',
+    Gross_Elec_Prod = 'S'
+)
+
+
+# Convert destimulants to stimulants
+for (col in names(data)) {
+    if (col %in% names(variable_types) && variable_types[[col]] == 'D') {
+        data[[col]] <- -1 * data[[col]]
+    }
+}
+```
+
+```{r}
+# Visualization of individual indicators
+for (indicator in names(indicators)) {
+    var_name <- indicators[[indicator]]
+    p <- ggplot(data, aes(x = Year, y = .data[[var_name]], color = country)) +
+        geom_line() +
+        geom_point() +
+        labs(title = paste(var_name, "over time"),
+             x = "Time",
+             y = var_name) +
+        theme_minimal() +
+        theme(legend.position = "bottom")
+    print(p)
+}
+
+```
+
+```{r}
+
+# Standardization (z-score)
+numeric_cols <- names(data)[sapply(data, is.numeric)]
+numeric_cols <- setdiff(numeric_cols, "Year") # Exclude Year column
+
+df_numeric <- data[, numeric_cols]
+df_std <- as.data.frame(scale(df_numeric))
+colnames(df_std) <- paste0(colnames(df_numeric), "_std")
+
+# Add standardized columns to original data
+data <- cbind(data, df_std)
+
+# Equal Weighting (average of standardized values)
+std_cols <- grep("_std$", colnames(data), value = TRUE)
+data$equal_weighting <- rowMeans(data[, std_cols], na.rm = TRUE)
+
+```
+
+
+```{r}
+# PCA (principal component analysis)
+pca_data <- data[, grep("_std$", colnames(data), value = TRUE)]
+pca_result <- prcomp(pca_data, scale. = TRUE, center = TRUE)
+data$PCA <- pca_result$x[, 1]
+
+```
+
+```{r}
+# Entropy Weighting Method (MinMax normalization)
+minmax_norm <- function(x) {
+    (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
+}
+
+df_norm <- as.data.frame(apply(df_numeric, 2, minmax_norm))
+
+# Calculate entropy weights
+P <- df_norm / (colSums(df_norm) + 1e-8)
+P[P == 0] <- 1e-10
+E <- -colSums(P * log(P)) / log(nrow(df_norm))
+d <- 1 - E
+ewm_weights <- d / sum(d)
+data$entropy_weighting <- as.matrix(df_norm) %*% ewm_weights
+
+```
+
+```{r}
+# Plot synthetic indicators
+plot_data <- data %>%
+    select(Year, country, equal_weighting, PCA, entropy_weighting) %>%
+    gather(key = "Method", value = "Value", -Year, -country)
+
+p <- ggplot(plot_data, aes(x = Year, y = Value, color = Method)) +
+    geom_line() +
+    geom_point() +
+    labs(title = "Synthetic Energy Sector Development Indicator (Eurostat data)",
+         y = "Development level",
+         x = "Year") +
+    theme_minimal() +
+    facet_wrap(~country) +
+    theme(legend.position = "bottom")
+
+print(p)
+
+```
+```{r}
+# Create weights table
+weights_table <- data.frame(
+    Indicator = names(indicators),
+    PCA_Loading = pca_result$rotation[, 1],
+    Entropy_Weight = ewm_weights
+)
+
+print("Factor loadings and weights:")
+print(weights_table)
+```
+
+```{r}
+# Time series analysis preparation
+# Create time series objects for each country
+countries_list <- unique(data$country)
+ts_list <- list()
+
+for (cntry in countries_list) {
+    cntry_data <- data %>% filter(country == cntry)
+    
+    # Create time series for each method
+    ts_equal <- ts(cntry_data$equal_weighting, 
+                   start = as.numeric(format(min(cntry_data$Year), "%Y")),
+                   frequency = 1)
+    
+    ts_pca <- ts(cntry_data$PCA,
+                 start = as.numeric(format(min(cntry_data$Year), "%Y")),
+                 frequency = 1)
+    
+    ts_entropy <- ts(cntry_data$entropy_weighting,
+                     start = as.numeric(format(min(cntry_data$Year), "%Y")),
+                     frequency = 1)
+    
+    ts_list[[cntry]] <- list(
+        equal = ts_equal,
+        pca = ts_pca,
+        entropy = ts_entropy
+    )
+}
+
+```
+
+```{r}
+# Evaluation metrics function
+eval_metrics <- function(actual, pred) {
+    me <- mean(pred - actual, na.rm = TRUE)
+    mpe <- 100 * mean((pred - actual) / actual, na.rm = TRUE)
+    mae <- mean(abs(pred - actual), na.rm = TRUE)
+    mape <- 100 * mean(abs((pred - actual) / actual), na.rm = TRUE)
+    rmse <- sqrt(mean((pred - actual)^2, na.rm = TRUE))
+    rmspe <- 100 * (rmse / mean(actual, na.rm = TRUE)) 
+    theil <- sqrt(mean((pred[-1] - actual[-1])^2, na.rm = TRUE)) / 
+        sqrt(mean(actual[-1]^2, na.rm = TRUE))
+    
+    return(list(ME = me, MPE = mpe, MAE = mae, MAPE = mape, 
+                RMSE = rmse, RMSPE = rmspe, Theil = theil))
+}
+
+```
+
+```{r}
+# Forecast models
+forecast_models <- function(ts_series, horizon, method = "auto") {
+    if (length(ts_series) < 3) {
+        return(list(pred = rep(NA, horizon), model = NULL, metrics = NULL))
+    }
+    
+    tryCatch({
+        if (method == "auto") {
+            # Try multiple models
+            models <- list()
+            metrics <- list()
+            
+            # Linear trend
+            train_idx <- 1:length(ts_series)
+            lm_model <- lm(ts_series ~ train_idx)
+            lm_pred <- predict(lm_model, 
+                               newdata = data.frame(train_idx = (max(train_idx)+1):(max(train_idx)+horizon)))
+            metrics$linear <- eval_metrics(ts_series, fitted(lm_model))
+            
+            # ETS
+            ets_model <- ets(ts_series)
+            ets_pred <- forecast(ets_model, h = horizon)$mean
+            metrics$ets <- eval_metrics(ts_series, fitted(ets_model))
+            
+            # ARIMA
+            arima_model <- auto.arima(ts_series)
+            arima_pred <- forecast(arima_model, h = horizon)$mean
+            metrics$arima <- eval_metrics(ts_series, fitted(arima_model))
+            
+            # Select best model based on RMSPE
+            rmspe_values <- sapply(metrics, function(x) x$RMSPE)
+            best_idx <- which.min(rmspe_values)
+            best_method <- names(metrics)[best_idx]
+            
+            if (best_method == "linear") {
+                return(list(pred = lm_pred, model = lm_model, 
+                            method = "Linear Trend", metrics = metrics$linear))
+            } else if (best_method == "ets") {
+                return(list(pred = ets_pred, model = ets_model, 
+                            method = "ETS", metrics = metrics$ets))
+            } else {
+                return(list(pred = arima_pred, model = arima_model, 
+                            method = "ARIMA", metrics = metrics$arima))
+            }
+        }
+    }, error = function(e) {
+        print(paste("Forecast error:", e$message))
+        return(list(pred = rep(NA, horizon), model = NULL, metrics = NULL))
+    })
+}
+
+```
+
+```{r}
+# Forecasting for each country and method
+steps_ahead <- 2
+forecast_results <- list()
+
+for (cntry in countries_list) {
+    print(paste("\n=== Forecasting for:", cntry, "==="))
+    
+    country_forecasts <- list()
+    
+    for (method_name in c("equal", "pca", "entropy")) {
+        ts_data <- ts_list[[cntry]][[method_name]]
+        
+        if (length(ts_data) > steps_ahead) {
+            train_data <- ts_data[1:(length(ts_data) - steps_ahead)]
+            test_data <- ts_data[(length(ts_data) - steps_ahead + 1):length(ts_data)]
+            
+            fc_result <- forecast_models(train_data, horizon = steps_ahead)
+            
+            if (!is.null(fc_result$metrics)) {
+                # Calculate test metrics
+                test_metrics <- eval_metrics(test_data, fc_result$pred)
+                
+                country_forecasts[[method_name]] <- list(
+                    train = train_data,
+                    test = test_data,
+                    forecast = fc_result$pred,
+                    model = fc_result$model,
+                    method = fc_result$method,
+                    metrics = test_metrics
+                )
+                
+                print(paste(method_name, "-", fc_result$method, 
+                            "- RMSPE:", round(test_metrics$RMSPE, 4), "%"))
+            }
+        }
+    }
+    
+    forecast_results[[cntry]] <- country_forecasts
+}
+
+```
+
+```{r}
+# Visualization of forecasts
+for (cntry in countries_list) {
+    if (!is.null(forecast_results[[cntry]])) {
+        plot_data <- data.frame(
+            Year = as.numeric(time(ts_list[[cntry]]$equal)),
+            Equal = as.numeric(ts_list[[cntry]]$equal),
+            PCA = as.numeric(ts_list[[cntry]]$pca),
+            Entropy = as.numeric(ts_list[[cntry]]$entropy)
+        )
+        
+        plot_data_long <- melt(plot_data, id.vars = "Year")
+        
+        p <- ggplot(plot_data_long, aes(x = Year, y = value, color = variable)) +
+            geom_line(size = 1) +
+            geom_point() +
+            labs(title = paste("Synthetic Indicators and Forecasts -", cntry),
+                 x = "Year",
+                 y = "Value") +
+            theme_minimal() +
+            theme(legend.position = "bottom")
+        
+        print(p)
+    }
+}
+```
+
+```{r}
+
+# Summary of forecast accuracy
+accuracy_summary <- list()
+
+for (cntry in countries_list) {
+    for (method in c("equal", "pca", "entropy")) {
+        if (!is.null(forecast_results[[cntry]][[method]])) {
+            metrics <- forecast_results[[cntry]][[method]]$metrics
+            method_name <- forecast_results[[cntry]][[method]]$method
+            
+            key <- paste(cntry, method, method_name, sep = " - ")
+            accuracy_summary[[key]] <- metrics
+        }
+    }
+}
+
+# Convert to dataframe
+accuracy_df <- do.call(rbind, lapply(accuracy_summary, function(x) as.data.frame(t(unlist(x)))))
+accuracy_df$Model <- rownames(accuracy_df)
+
+print("\n==================================")
+print("FORECAST ACCURACY SUMMARY:")
+print(accuracy_df)
+
+# Export results
+write.csv(data, "energy_sector_indicators.csv", row.names = FALSE)
+write.csv(accuracy_df, "forecast_accuracy_summary.csv", row.names = FALSE)
+
+print("\nAnalysis complete! Results exported to CSV files.")
+
+
+```
+
