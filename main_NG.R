@@ -364,9 +364,3 @@ cor_test <- cor.test(comparison$Rank_base, comparison$Rank_cur, method = "spearm
 
 print(paste("Współczynnik korelacji rang Spearmana:", round(cor_test$estimate, 3)))
 print(paste("p-value:", format.pval(cor_test$p.value)))
-
-if(cor_test$estimate > 0.7) {
-    message("Wniosek: Wysoka stabilność rankingów w czasie.")
-} else {
-    message("Wniosek: Zaszły istotne zmiany w strukturze rozwoju energetycznego.")
-}
