@@ -4,7 +4,7 @@
 # ==============================================================================
 
 # ==========================================
-# 1. KONFIGURACJA ŚRODOWISKA I POBIERANIE DANYCH
+# KONFIGURACJA ŚRODOWISKA I POBIERANIE DANYCH
 # ==========================================
 
 # Instalacja i ładowanie bibliotek
@@ -28,7 +28,6 @@ library(factoextra)
 library(corrplot)
 library(gridExtra)
 
-# Definicja wskaźników (Zmienne diagnostyczne)
 indicators <- c(
     'nrg_ind_ren'     = 'OZE_Share',           # X1: Udział OZE w końcowym zużyciu energii [%] (Stymulanta)
     'nrg_ind_ei'      = 'Energy_Intensity',    # X2: Energochłonność (kgoe / 1000 EUR) (Destymulanta)
@@ -37,7 +36,6 @@ indicators <- c(
     'nrg_bal_c'       = 'Gross_Elec_Prod'      # X5: Całkowita produkcja prądu [GWh] (Stymulanta)
 )
 
-# Konfiguracja filtrów API Eurostat
 stats <- list(
     "nrg_ind_ren" = list("nrg_bal" = "REN"),           
     "nrg_ind_ei"  = list("nrg_bal" = "EI_GDP_PPS"), 
@@ -54,7 +52,6 @@ stats <- list(
     )
 )
 
-# Typy zmiennych (S - Stymulanta, D - Destymulanta)
 variable_types <- c(
     'OZE_Share'         = 'S',
     'Energy_Intensity'  = 'D',
@@ -63,7 +60,6 @@ variable_types <- c(
     'Gross_Elec_Prod'   = 'S'
 )
 
-# Mapowanie skrótów krajów na pełne nazwy
 GEO <- c(
     "AT" = "Austria", "BE" = "Belgium", "BG" = "Bulgaria", "CY" = "Cyprus", 
     "CZ" = "Czechia", "DE" = "Germany", "DK" = "Denmark", "EE" = "Estonia", 
@@ -134,9 +130,8 @@ for (var_name in indicators) {
 }
 
 # ==========================================
-# 2. PRZYGOTOWANIE DANYCH DO ANALIZY
+# PRZYGOTOWANIE DANYCH DO ANALIZY
 # ==========================================
-# Wybieramy rok, dla którego mamy najwięcej pełnych danych (często ostatni pełny rok to rok n-2)
 analysis_year <- '2024-01-01' 
 
 data_static <- full_data %>%
@@ -146,17 +141,20 @@ data_static <- full_data %>%
 
 rownames(data_static) <- data_static$Country_Name
 
-# Wyodrębnienie tylko zmiennych numerycznych do macierzy X
+# Wyodrębnienie tylko zmiennych numerycznych
 X_raw <- data_static %>% select(all_of(indicators))
 
-# 2.1. Transformacja zmiennych (Ujednolicenie charakteru -> Stymulanty)
-# Zgodnie z teorią (Lab 7/9): Destymulanty zamieniamy na stymulanty.
-# Używamy metody: x' = max(x) - x (dzięki temu zachowujemy dodatnie wartości, co jest bezpieczniejsze dla niektórych miar)
+# Transformacja zmiennych
 
 X_stimulants <- X_raw
 X_stimulants <- 
     X_stimulants %>% 
     rename(any_of(setNames(names(indicators), indicators)))
+
+# Wizualizacja korelacji między zmiennymi
+corr_matrix <- cor(X_stimulants)
+corrplot(corr_matrix, method = "color", type = "upper", 
+         addCoef.col = "black", tl.col = "black", title = "Macierz korelacji 2024", mar = c(0,0,1,0))
 
 for (col in names(variable_types)) {
     if (variable_types[[col]] == 'D') {
@@ -166,33 +164,22 @@ for (col in names(variable_types)) {
     }
 }
 
-# 2.2. Standaryzacja (Z-score)
-# X_std = (x - mean) / sd
+# Standaryzacja (Z-score)
 X_scaled <- scale(X_stimulants)
 X_scaled_df <- as.data.frame(X_scaled)
 
-# TODO: przenieść na przed zmianą na stymulanty i standaryzacją
-# Wizualizacja korelacji między zmiennymi (po zamianie na stymulanty)
-corr_matrix <- cor(X_scaled_df)
-corrplot(corr_matrix, method = "color", type = "upper", 
-         addCoef.col = "black", tl.col = "black", title = "Macierz korelacji", mar = c(0,0,1,0))
 
 # ==========================================
-# 3. ANALIZA GŁÓWNYCH SKŁADOWYCH (PCA)
+# ANALIZA GŁÓWNYCH SKŁADOWYCH
 # ==========================================
-# Cel: Redukcja wymiarowości i wizualizacja pozycji krajów na płaszczyźnie 2D
 
 pca_result <- prcomp(X_scaled_df, center = FALSE, scale. = FALSE) # Dane już zestandaryzowane
 
-# 3.1. Wykres osypiska (Scree plot) - wybór liczby składowych
+# Wykres osypiska (Scree plot) - wybór liczby składowych
 fviz_eig(pca_result, addlabels = TRUE, ylim = c(0, 60), 
          main = "Wykres osypiska (Scree Plot)")
 
-# TODO: ogarnąć interpretacje PCA i czy coś jeszcze nie pokazać
-
-# 3.2. Wizualizacja PC1 vs PC2
-# PC1 często interpretuje się jako ogólny poziom rozwoju ("wielkość" sektora/rozwoju),
-# PC2 jako specyfikę struktury (np. emisyjność vs OZE).
+# Wizualizacja PC1 vs PC2
 
 pca_scores <- as.data.frame(pca_result$x)
 pca_scores$Country <- rownames(pca_scores)
@@ -208,35 +195,31 @@ ggplot(pca_scores, aes(x = PC1, y = PC2, label = Country)) +
          y = paste0("PC2 (", round(summary(pca_result)$importance[2,2]*100, 1), "%)")) +
     theme_minimal()
 
-# Interpretacja ładunków (Loadings) - co tworzy PC1 i PC2?
 print("Ładunki czynnikowe (Rotation):")
 print(pca_result$rotation[, 1:2])
 
 # ==========================================
-# 4. ANALIZA SKUPIEŃ (CLUSTER ANALYSIS)
+# ANALIZA SKUPIEŃ (CLUSTER ANALYSIS)
 # ==========================================
-# Cel: Pogrupowanie krajów o podobnym profilu energetycznym
 
-# Wybór optymalnego k metodą łokcia (Elbow method)
+# Wybór optymalnego k
 fviz_nbclust(X_scaled, kmeans, method = "wss") +
     labs(title = "Metoda łokcia")
 
-# 4.1. Metoda hierarchiczna (Warda)
+# Metoda Warda
 dist_euclid <- dist(X_scaled, method = "euclidean")
 hc_ward <- hclust(dist_euclid, method = "ward.D2")
 
 # Dendrogram
-fviz_dend(hc_ward, k = 4, # Zakładamy 4 klastry na podstawie analizy wzrokowej
+fviz_dend(hc_ward, k = 4,
           cex = 0.6, 
           k_colors = c("#2E9FDF", "#00AFBB", "#E7B800", "#FC4E07"),
           color_labels_by_k = TRUE, 
           rect = TRUE,
           main = "Dendrogram - Metoda Warda")
 
-# 4.2. Metoda niehierarchiczna (k-średnich)
+# Uruchomienie k-means
 set.seed(42)
-
-# Uruchomienie k-means dla k=4 (przykładowo, na podstawie wykresu)
 km_res <- kmeans(X_scaled, centers = 4, nstart = 25)
 
 # Wizualizacja klastrów na wykresie PCA
@@ -250,39 +233,36 @@ fviz_cluster(km_res, data = X_scaled,
 data_static$Cluster <- as.factor(km_res$cluster)
 
 # ==========================================
-# 5. PORZĄDKOWANIE LINIOWE - METODA HELLWIGA
+# PORZĄDKOWANIE LINIOWE - METODA HELLWIGA
 # ==========================================
-# Cel: Stworzenie rankingu Taksonomicznego Miernika Rozwoju (TMR)
 
-# 5.1. Wyznaczenie wzorca rozwoju (Obiekt Idealny)
-# Ponieważ mamy same stymulanty (po transformacji), wzorcem jest wektor maksimów.
+# Wyznaczenie wzorca rozwoju
 pattern <- apply(X_scaled, 2, max)
 
-# 5.2. Obliczenie odległości każdego kraju od wzorca (d_i0)
+# Obliczenie odległości każdego kraju od wzorca
 dist_to_pattern <- sqrt(rowSums((X_scaled - matrix(pattern, 
                                                    nrow = nrow(X_scaled), 
                                                    ncol = ncol(X_scaled), 
                                                    byrow = TRUE))^2))
 
-# 5.3. Konstrukcja miernika (TMR)
+# Konstrukcja miernika
 d0 <- mean(dist_to_pattern) + 2 * sd(dist_to_pattern)
 TMR <- 1 - (dist_to_pattern / d0)
 
-# Korekta ujemnych wartości (rzadkie, ale możliwe w metodzie)
+# Korekta ujemnych wartości
 TMR[TMR < 0] <- 0
 
-# 5.4. Tworzenie rankingu
+# Tworzenie rankingu
 ranking_hellwig <- data.frame(
     Country = names(TMR),
     TMR_Value = TMR,
-    Rank = rank(-TMR) # Minus, bo im wyższe TMR tym lepsze miejsce (1)
+    Rank = rank(-TMR)
 ) %>% arrange(Rank)
 
-# TODO: sprawdzić czy zgodne z intuicją, co z Maltą
-print("Ranking krajów UE metodą Hellwiga (2024):")
+print("Ranking krajów UE metodą Hellwiga:")
 print(ranking_hellwig)
 
-# 5.5. Wizualizacja rankingu
+# Wizualizacja rankingu
 ggplot(ranking_hellwig, aes(x = reorder(Country, TMR_Value), y = TMR_Value, fill = TMR_Value)) +
     geom_col() +
     coord_flip() +
@@ -294,12 +274,10 @@ ggplot(ranking_hellwig, aes(x = reorder(Country, TMR_Value), y = TMR_Value, fill
     theme(legend.position = "none")
 
 # ==========================================
-# 6. ANALIZA DYNAMIKI (PORÓWNANIE 2014 vs 2024)
+# ANALIZA DYNAMIKI
 # ==========================================
-# Cel: Sprawdzenie stabilności czołówki i zmian w czasie
 
 calculate_tmr <- function(data_year, year_val) {
-    # Filtrowanie i czyszczenie
     df_iter <- data_year %>% filter(time == year_val) %>% drop_na()
     countries <- df_iter$Country_Name
     
@@ -330,18 +308,18 @@ calculate_tmr <- function(data_year, year_val) {
 res_base <- calculate_tmr(full_data, '2014-01-01')
 res_cur <- calculate_tmr(full_data, '2024-01-01')
 
-# Łączenie wyników (tylko wspólne kraje)
+# Łączenie wyników
 comparison <- inner_join(res_base, res_cur, by = "Country", suffix = c("_base", "_cur")) %>%
     mutate(
         Rank_base = rank(-TMR_base),
         Rank_cur = rank(-TMR_cur),
-        Rank_Change = Rank_base - Rank_cur # Dodatnia wartość = awans
+        Rank_Change = Rank_base - Rank_cur
     )
 
 print("Zmiana pozycji w rankingu (base vs cur):")
 print(comparison %>% select(Country, Rank_base, Rank_cur, Rank_Change) %>% arrange(desc(Rank_Change)))
 
-# Wykres zmian (Slope Chart)
+# Wykres zmian
 comparison_long <- comparison %>%
     select(Country, Rank_base, Rank_cur) %>%
     pivot_longer(cols = c("Rank_base", "Rank_cur"), names_to = "Year", values_to = "Rank")
@@ -359,7 +337,7 @@ ggplot(comparison_long, aes(x = Year, y = Rank, group = Country)) +
     theme_minimal() +
     theme(legend.position = "none")
 
-# Test korelacji rang Spearmana (Zgodność uporządkowań)
+# Test korelacji rang Spearmana
 cor_test <- cor.test(comparison$Rank_base, comparison$Rank_cur, method = "spearman")
 
 print(paste("Współczynnik korelacji rang Spearmana:", round(cor_test$estimate, 3)))
