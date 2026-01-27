@@ -108,23 +108,94 @@ full_data <- list_of_dfs %>%
     arrange(Year, Country_Name) %>%
     drop_na()
 
+indicators2 <- c(
+    "Udział OZE w zużyciu końcowym" = "OZE_Share",
+    "Energochłonność gospodarki" = "Energy_Intensity",
+    "Zależność importowa" = "Import_Dependency",
+    "Emisje z sektora dostaw energii" = "GHG_Energy_Sector",
+    "Całkowita produkcja energii elektrycznej" = "Gross_Elec_Prod"
+)
 
 # ==========================================
 # Wizualizacja
 # ==========================================
 
-for (var_name in indicators) {
-    p <- ggplot(full_data, aes(x = time, y = .data[[var_name]], color = Country_Name)) +
-        geom_line() +
-        geom_point(size = 1) +
+library(ggrepel)
+
+# Zdefiniuj listę krajów do pokazania etykiet
+important_countries <- c("Poland", "Germany", "France", "Italy", "Spain", 
+                         "Netherlands", "Sweden", "Finland", "Belgium", 
+                         "Ireland", "Estonia")
+
+for (i in seq_along(indicators2)) {
+    var_technical <- indicators2[i]
+    var_polish <- names(indicators2)[i]
+    
+    filtered_data <- full_data %>%
+        filter(year(time) >= 2014)
+    
+    label_data <- filtered_data %>%
+        filter(Country_Name %in% important_countries) %>%
+        group_by(Country_Name) %>%
+        filter(time == max(time)) %>%
+        ungroup()
+    
+    p <- ggplot(filtered_data, aes(x = time, y = .data[[var_technical]], color = Country_Name)) +
+        geom_line(aes(alpha = ifelse(Country_Name %in% important_countries, 1, 0.5)),
+                  linewidth = 1.4) +
+        geom_point(size = 1.6) +
+        geom_text_repel(
+            data = label_data,
+            aes(label = Country_Name),
+            size = 7,
+            fontface = "bold",
+            nudge_x = 1,
+            direction = "y",
+            hjust = 0,
+            segment.size = 0.6,
+            segment.color = "grey50",
+            show.legend = FALSE
+        ) +
+        geom_line(
+            data = filtered_data %>% filter(Country_Name == "Poland"),
+            aes(x = time, y = .data[[var_technical]]),
+            color = "red",
+            linewidth = 2.4,
+            show.legend = FALSE
+        ) +
         labs(
-            title = paste(var_name, "na przestrzeni lat"),
-            x = "Czas",
-            y = var_name,
+            title = paste(var_polish, "na przestrzeni lat"),
+            subtitle = "Etykiety: główne kraje UE + Polska (czerwona linia)",
+            x = "Rok",
+            y = var_polish,
             color = "Kraj"
         ) +
         theme_minimal() +
-        theme(legend.position = "right")
+        theme(
+            legend.position = "none",
+            # --- POWIĘKSZONE CZCIONKI ---
+            plot.title = element_text(size = 20, face = "bold", margin = margin(b = 10)),
+            plot.subtitle = element_text(size = 14, color = "gray40", margin = margin(b = 15)),
+            axis.title.x = element_text(size = 16, face = "bold"),
+            axis.title.y = element_text(size = 16, face = "bold"),
+            axis.text.x = element_text(size = 14),
+            axis.text.y = element_text(size = 14),
+            # ---------------------------
+            panel.grid.minor = element_blank()
+        ) +
+        scale_x_date(expand = expansion(mult = c(0.05, 0.25))) +
+        scale_alpha_continuous(guide = "none") + 
+        scale_color_manual(
+            values = c(
+                "Poland" = "red",
+                setNames(
+                    rep(RColorBrewer::brewer.pal(8, "Set2"), length.out = length(important_countries)-1),
+                    important_countries[important_countries != "Poland"]
+                ),
+                "Other" = "gray70"
+            ),
+            breaks = c("Poland", important_countries[important_countries != "Poland"])
+        )
     
     print(p)
 }
@@ -137,24 +208,30 @@ analysis_year <- '2024-01-01'
 data_static <- full_data %>%
     filter(time == analysis_year) %>%
     drop_na() %>%
-    as.data.frame()# Usuwamy braki danych tylko dla wybranego roku
+    as.data.frame()
 
 rownames(data_static) <- data_static$Country_Name
 
-# Wyodrębnienie tylko zmiennych numerycznych
-X_raw <- data_static %>% select(all_of(indicators))
-
-# Transformacja zmiennych
-
-X_stimulants <- X_raw
-X_stimulants <- 
-    X_stimulants %>% 
-    rename(any_of(setNames(names(indicators), indicators)))
+# Wyodrębnienie zmiennych i zmiana ich nazw na polskie
+X_stimulants <- data_static %>% 
+    select(all_of(indicators2)) %>%
+    rename(any_of(indicators2)) # Zmiana nazw kolumn na klucze z wektora indicators
 
 # Wizualizacja korelacji między zmiennymi
 corr_matrix <- cor(X_stimulants)
-corrplot(corr_matrix, method = "color", type = "upper", 
-         addCoef.col = "black", tl.col = "black", title = "Macierz korelacji 2024", mar = c(0,0,1,0))
+
+# Powiększone parametry dla lepszej czytelności (zgodnie z Twoim stylem)
+corrplot(corr_matrix, 
+         method = "color", 
+         type = "upper", 
+         addCoef.col = "black", 
+         tl.col = "black", 
+         title = "Macierz korelacji 2014", 
+         mar = c(0,0,2,0),      # Zwiększony margines górny na tytuł
+         number.cex = 1.2,      # Rozmiar współczynników
+         cl.cex = 1.2,          # Rozmiar legendy kolorów
+         tl.cex = 1.1,          # Rozmiar etykiet tekstowych
+         tl.srt = 45)           # Obrót etykiet
 
 for (col in names(variable_types)) {
     if (variable_types[[col]] == 'D') {
@@ -185,8 +262,8 @@ pca_scores <- as.data.frame(pca_result$x)
 pca_scores$Country <- rownames(pca_scores)
 
 ggplot(pca_scores, aes(x = PC1, y = PC2, label = Country)) +
-    geom_point(color = "steelblue", size = 3) +
-    geom_text_repel(size = 3.5, max.overlaps = 15) +
+    geom_point(color = "steelblue", size = 4) +
+    geom_text_repel(size = 6, max.overlaps = 15) +
     geom_vline(xintercept = 0, linetype = "dashed", color = "gray") +
     geom_hline(yintercept = 0, linetype = "dashed", color = "gray") +
     labs(title = paste("Analiza PCA sektora energetycznego UE (", analysis_year, ")", sep=""),
@@ -202,21 +279,73 @@ print(pca_result$rotation[, 1:2])
 # ANALIZA SKUPIEŃ (CLUSTER ANALYSIS)
 # ==========================================
 
-# Wybór optymalnego k
-fviz_nbclust(X_scaled, kmeans, method = "wss") +
-    labs(title = "Metoda łokcia")
+library(factoextra)
 
+fviz_nbclust(X_scaled, kmeans, method = "wss") +
+    geom_line(size = 5.5, linewidth = 5.5) + 
+    geom_point(size = 4) +
+    labs(
+        title = "Metoda łokcia",
+        subtitle = "Wybór optymalnej liczby klastrów",
+        x = "Liczba klastrów k",
+        y = "Całkowita wewnątrzklastrowa suma kwadratów (WSS)"
+    ) +
+    theme(
+        # Bardzo duże czcionki
+        axis.title.x = element_text(size = 16, face = "bold"),
+        axis.title.y = element_text(size = 16, face = "bold"),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
+        
+        # Opcjonalnie: powiększenie punktów i linii
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 15, face = "bold"),
+        # Podtytuł
+        plot.subtitle = element_text(size = 18, hjust = 0.5, 
+                                     color = "gray40", margin = margin(b = 20)),
+        
+     )
 # Metoda Warda
 dist_euclid <- dist(X_scaled, method = "euclidean")
 hc_ward <- hclust(dist_euclid, method = "ward.D2")
 
 # Dendrogram
 fviz_dend(hc_ward, k = 4,
-          cex = 0.6, 
+          cex = 1.0,
           k_colors = c("#2E9FDF", "#00AFBB", "#E7B800", "#FC4E07"),
           color_labels_by_k = TRUE, 
           rect = TRUE,
-          main = "Dendrogram - Metoda Warda")
+          rect_lty = 2,
+          main = "Dendrogram - Metoda Warda") +
+    labs(
+        title = "Dendrogram - Grupowanie hierarchiczne (metoda Warda)",
+        x = "Kraje",
+        y = "Odległość międzygrupowa"
+    ) +
+    theme(
+        # Tytuł - bardzo duży
+        plot.title = element_text(size = 24, face = "bold", 
+                                  hjust = 0.5, margin = margin(b = 20)),
+        
+        # Etykiety osi
+        axis.title.x = element_text(size = 18, face = "bold",
+                                    margin = margin(t = 15)),
+        axis.title.y = element_text(size = 18, face = "bold",
+                                    margin = margin(r = 15)),
+        
+        # Podziałki na osiach
+        axis.text.x = element_text(size = 14, angle = 45, hjust = 1,
+                                   margin = margin(t = 5)),
+        axis.text.y = element_text(size = 14),
+        
+        # Legenda (jeśli jest)
+        legend.title = element_text(size = 16, face = "bold"),
+        legend.text = element_text(size = 14),
+        
+        # Ogólne tło i marginesy
+        plot.margin = margin(20, 20, 20, 20, "pt")
+    )
 
 # Uruchomienie k-means
 set.seed(42)
@@ -227,7 +356,33 @@ fviz_cluster(km_res, data = X_scaled,
              palette = c("#2E9FDF", "#00AFBB", "#E7B800", "#FC4E07"),
              ellipse.type = "convex",
              ggtheme = theme_minimal(),
-             main = "Wyniki grupowania k-means (k=4)")
+             repel = TRUE,          # Zapobiega nakładaniu się etykiet
+             
+             main = "Wyniki grupowania k-means (k=4)") +
+    theme(
+        # Tytuł - bardzo duży
+        plot.title = element_text(size = 24, face = "bold", 
+                                  hjust = 0.5, margin = margin(b = 20)),
+        
+        # Etykiety osi
+        axis.title.x = element_text(size = 18, face = "bold",
+                                    margin = margin(t = 15)),
+        axis.title.y = element_text(size = 18, face = "bold",
+                                    margin = margin(r = 15)),
+        
+        # Podziałki na osiach
+        axis.text.x = element_text(size = 14, angle = 45, hjust = 1,
+                                   margin = margin(t = 5)),
+        axis.text.y = element_text(size = 14),
+        
+        # Legenda (jeśli jest)
+        legend.title = element_text(size = 16, face = "bold"),
+        legend.text = element_text(size = 14),
+        
+        # Ogólne tło i marginesy
+        plot.margin = margin(20, 20, 20, 20, "pt")
+    )
+
 
 # Dodanie informacji o klastrze do danych
 data_static$Cluster <- as.factor(km_res$cluster)
@@ -271,7 +426,38 @@ ggplot(ranking_hellwig, aes(x = reorder(Country, TMR_Value), y = TMR_Value, fill
          subtitle = paste("Rok:", analysis_year),
          x = "Kraj", y = "Wartość TMR") +
     theme_minimal() +
-    theme(legend.position = "none")
+    theme(legend.position = "none")+
+    theme_minimal(base_size = 16) +  # Zwiększenie bazowego rozmiaru czcionki
+    theme(
+        # Tytuł - bardzo duży
+        plot.title = element_text(size = 24, face = "bold", 
+                                  hjust = 0.5, margin = margin(b = 15)),
+        
+        # Podtytuł
+        plot.subtitle = element_text(size = 18, hjust = 0.5, 
+                                     color = "gray40", margin = margin(b = 20)),
+        
+        # Etykiety osi
+        axis.title.x = element_text(size = 18, face = "bold",
+                                    margin = margin(t = 15)),
+        axis.title.y = element_text(size = 18, face = "bold"),
+        
+        # Tekst na osiach
+        axis.text.x = element_text(size = 16, face = "bold"),
+        axis.text.y = element_text(size = 16, face = "bold"),  # Nazwy krajów
+        
+        # Siatka
+        panel.grid.major.x = element_line(color = "gray80", linewidth = 0.5),
+        panel.grid.minor.x = element_line(color = "gray90", linewidth = 0.3),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        
+        # Legenda
+        legend.position = "none",
+        
+        # Marginesy
+        plot.margin = margin(30, 30, 30, 30, "pt")
+    )
 
 # ==========================================
 # ANALIZA DYNAMIKI
@@ -325,17 +511,78 @@ comparison_long <- comparison %>%
     pivot_longer(cols = c("Rank_base", "Rank_cur"), names_to = "Year", values_to = "Rank")
 
 ggplot(comparison_long, aes(x = Year, y = Rank, group = Country)) +
-    geom_line(aes(color = Country), size = 1, alpha = 0.6) +
-    geom_point(aes(color = Country), size = 3) +
-    geom_text_repel(data = subset(comparison_long, Year == "Rank_base"), 
-                    aes(label = Country), direction = "y", nudge_x = -0.1, size = 3) +
-    geom_text_repel(data = subset(comparison_long, Year == "Rank_cur"), 
-                    aes(label = Country), direction = "y", nudge_x = 0.1, size = 3) +
-    scale_y_reverse(breaks = 1:nrow(comparison)) +
-    labs(title = "Zmiana pozycji rankingowych krajów (base vs cur)",
-         y = "Pozycja w rankingu (1 = Najlepsza)") +
-    theme_minimal() +
-    theme(legend.position = "none")
+    geom_line(aes(color = Country), linewidth = 1.2, alpha = 0.7) +
+    geom_point(aes(color = Country), size = 4) +
+    # Etykiety po lewej stronie (rok bazowy)
+    geom_text_repel(
+        data = subset(comparison_long, Year == "Rank_base"), 
+        aes(label = Country), 
+        direction = "y", 
+        nudge_x = -0.15,  # Większe przesunięcie
+        size = 4.5,       # Zwiększona czcionka
+        fontface = "bold",
+        box.padding = 0.5,
+        point.padding = 0.3,
+        segment.size = 0.4,
+        min.segment.length = 0
+    ) +
+    # Etykiety po prawej stronie (rok bieżący)
+    geom_text_repel(
+        data = subset(comparison_long, Year == "Rank_cur"), 
+        aes(label = Country), 
+        direction = "y", 
+        nudge_x = 0.15,   # Większe przesunięcie
+        size = 4.5,       # Zwiększona czcionka
+        fontface = "bold",
+        box.padding = 0.5,
+        point.padding = 0.3,
+        segment.size = 0.4,
+        min.segment.length = 0
+    ) +
+    scale_y_reverse(
+        breaks = 1:nrow(comparison),
+        limits = c(nrow(comparison), 1)  # Ustal limity dla lepszej widoczności
+    ) +
+    scale_x_discrete(
+        labels = c("Rank_base" = "Rok bazowy\n(2014)", 
+                   "Rank_cur" = "Rok bieżący\n(2024)")
+    ) +
+    labs(
+        title = "DYNAMIKA ZMIAN W RANKINGU ROZWOJU ENERGETYCZNEGO UE",
+        subtitle = "Porównanie pozycji krajów w latach 2014 i 2024",
+        x = "Okres analizy",
+        y = "Pozycja w rankingu (1 = najwyższa)"
+    ) +
+    theme_minimal(base_size = 16) +
+    theme(
+        # Tytuł
+        plot.title = element_text(size = 26, face = "bold", hjust = 0.5,
+                                  margin = margin(b = 15)),
+        plot.subtitle = element_text(size = 20, hjust = 0.5, 
+                                     color = "gray40", margin = margin(b = 25)),
+        
+        # Etykiety osi
+        axis.title.x = element_text(size = 20, face = "bold",
+                                    margin = margin(t = 20)),
+        axis.title.y = element_text(size = 20, face = "bold",
+                                    margin = margin(r = 20)),
+        
+        # Podziałki na osiach
+        axis.text.x = element_text(size = 18, face = "bold"),
+        axis.text.y = element_text(size = 16, face = "bold"),
+        
+        # Siatka
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_line(color = "gray90", linewidth = 0.6),
+        panel.grid.minor.y = element_blank(),
+        
+        # Legenda
+        legend.position = "none",
+        
+        # Marginesy
+        plot.margin = margin(40, 60, 40, 40, "pt")
+    )
 
 # Test korelacji rang Spearmana
 cor_test <- cor.test(comparison$Rank_base, comparison$Rank_cur, method = "spearman")
